@@ -379,9 +379,11 @@ class ColumnParallelLinear(LinearBase):
         prefix: str = "",
         *,
         return_bias: bool = True,
+        disable_tp: bool = False,
     ):
         # Divide the weight matrix along the last dimension.
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_tensor_model_parallel_world_size(disable=disable_tp)
+        self.disable_tp = disable_tp
         self.input_size_per_partition = input_size
         self.output_size_per_partition = divide(output_size, self.tp_size)
         self.output_partition_sizes = [self.output_size_per_partition]
@@ -428,7 +430,7 @@ class ColumnParallelLinear(LinearBase):
             self.register_parameter("bias", None)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_rank = get_tensor_model_parallel_rank(disable=self.disable_tp)
         output_dim = getattr(param, "output_dim", None)
 
         is_sharded_weight = getattr(param, "is_sharded_weight", False)
@@ -820,6 +822,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         prefix: str = "",
         *,
         return_bias: bool = True,
+        disable_tp: bool = False,
     ):
         self.hidden_size = hidden_size
         self.head_size = head_size
@@ -828,7 +831,8 @@ class QKVParallelLinear(ColumnParallelLinear):
             total_num_kv_heads = total_num_heads
         self.total_num_kv_heads = total_num_kv_heads
         # Divide the weight matrix along the last dimension.
-        tp_size = get_tensor_model_parallel_world_size()
+        tp_size = get_tensor_model_parallel_world_size(disable=disable_tp)
+        self.disable_tp = disable_tp
         self.num_heads = divide(self.total_num_heads, tp_size)
         if tp_size >= self.total_num_kv_heads:
             self.num_kv_heads = 1
@@ -854,7 +858,8 @@ class QKVParallelLinear(ColumnParallelLinear):
                          params_dtype=params_dtype,
                          quant_config=quant_config,
                          prefix=prefix,
-                         return_bias=return_bias)
+                         return_bias=return_bias,
+                         disable_tp=disable_tp)
 
     def _get_shard_offset_mapping(self, loaded_shard_id: str):
         shard_offset_mapping = {
@@ -1048,7 +1053,7 @@ class QKVParallelLinear(ColumnParallelLinear):
                 self.weight_loader(param, loaded_weight_shard, shard_id)
             return
 
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_rank = get_tensor_model_parallel_rank(disable=self.disable_tp)
         assert loaded_shard_id in ["q", "k", "v"]
 
         # If output dim is defined, use the default loading process.
@@ -1171,10 +1176,12 @@ class RowParallelLinear(LinearBase):
         prefix: str = "",
         *,
         return_bias: bool = True,
+        disable_tp: bool = False,
     ):
         # Divide the weight matrix along the first dimension.
-        self.tp_rank = get_tensor_model_parallel_rank()
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_rank = get_tensor_model_parallel_rank(disable=disable_tp)
+        self.tp_size = get_tensor_model_parallel_world_size(disable=disable_tp)
+        self.disable_tp = disable_tp
         self.input_size_per_partition = divide(input_size, self.tp_size)
         self.output_size_per_partition = output_size
         self.output_partition_sizes = [output_size]
@@ -1216,8 +1223,8 @@ class RowParallelLinear(LinearBase):
             self.register_parameter("bias", None)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
-        tp_rank = get_tensor_model_parallel_rank()
-        tp_size = get_tensor_model_parallel_world_size()
+        tp_rank = get_tensor_model_parallel_rank(disable=self.disable_tp)
+        tp_size = get_tensor_model_parallel_world_size(disable=self.disable_tp)
         input_dim = getattr(param, "input_dim", None)
         use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
         is_sharded_weight = getattr(param, "is_sharded_weight", False)

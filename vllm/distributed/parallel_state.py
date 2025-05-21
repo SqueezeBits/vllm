@@ -1068,13 +1068,17 @@ def patch_tensor_parallel_group(tp_group: GroupCoordinator):
         _TP = old_tp_group
 
 
-def get_tensor_model_parallel_world_size():
+def get_tensor_model_parallel_world_size(disable=False):
     """Return world size for the tensor model parallel group."""
+    if disable:
+        return 1
     return get_tp_group().world_size
 
 
-def get_tensor_model_parallel_rank():
+def get_tensor_model_parallel_rank(disable=False):
     """Return my rank for the tensor model parallel group."""
+    if disable:
+        return 0
     return get_tp_group().rank_in_group
 
 

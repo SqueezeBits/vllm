@@ -21,6 +21,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Inference-only Qwen3MoE model compatible with HuggingFace weights."""
+import os
 from typing import Any, Dict, Iterable, Optional, Set, Tuple, Union
 
 import torch
@@ -162,7 +163,8 @@ class Qwen3MoeAttention(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
-        tp_size = get_tensor_model_parallel_world_size()
+        disable_tp = os.environ.get("DISABLE_ATTN_TP", "False").lower() in ("true", "1")
+        tp_size = get_tensor_model_parallel_world_size(disable=disable_tp)
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -189,13 +191,15 @@ class Qwen3MoeAttention(nn.Module):
                                           self.total_num_kv_heads,
                                           bias=qkv_bias,
                                           quant_config=quant_config,
-                                          prefix=f"{prefix}.qkv_proj")
+                                          prefix=f"{prefix}.qkv_proj",
+                                          disable_tp=disable_tp)
 
         self.o_proj = RowParallelLinear(self.total_num_heads * self.head_dim,
                                         hidden_size,
                                         bias=False,
                                         quant_config=quant_config,
-                                        prefix=f"{prefix}.o_proj")
+                                        prefix=f"{prefix}.o_proj",
+                                        disable_tp=disable_tp)
 
         self.rotary_emb = get_rope(
             self.head_dim,
