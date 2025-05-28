@@ -11,7 +11,6 @@ from vllm.distributed.parallel_state import (
     destroy_model_parallel,
     destroy_distributed_environment,
 )
-from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.config import VllmConfig, ParallelConfig, CompilationConfig
 from vllm.utils import get_distributed_init_method, get_ip, get_open_port
 
@@ -89,8 +88,14 @@ class OpWrapper(ABC):
             inputs_loaded[input_name] = torch.load(saved_path)
         return inputs_loaded
     
-    def build_attn_metadata(self) -> FlashAttentionMetadata:
+    def build_attn_metadata(self) -> "FlashAttentionMetadata":
         if self.device == "cuda":
+            if os.environ.get("VLLM_USE_V1", "1") == "0":
+                from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+            else:
+                raise NotImplementedError("Using VLLM V1 is not implemented yet. "
+                                        "Please disable it with \"VLLM_USE_V1=0\"")
+
             # FlashAttentionMetadata
             seq_block_size = 32
             seq_block_num = self.seq_len // seq_block_size
