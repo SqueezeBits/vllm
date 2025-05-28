@@ -1,10 +1,16 @@
 from abc import ABC, abstractmethod
 import argparse
+import contextlib
 import os
 from typing import Any
 
 import torch
-from vllm.distributed.parallel_state import init_distributed_environment, initialize_model_parallel
+from vllm.distributed.parallel_state import (
+    init_distributed_environment,
+    initialize_model_parallel,
+    destroy_model_parallel,
+    destroy_distributed_environment,
+)
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.config import VllmConfig, ParallelConfig, CompilationConfig
 from vllm.utils import get_distributed_init_method, get_ip, get_open_port
@@ -188,3 +194,9 @@ class ModuleWrapper(OpWrapper):
             ),
             compilation_config=CompilationConfig(),
         )
+    
+    def __del__(self) -> None:
+        with contextlib.suppress(AttributeError):
+            super().__del__()
+        destroy_model_parallel()
+        destroy_distributed_environment()
