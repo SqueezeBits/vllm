@@ -72,5 +72,4 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
 if __name__ == "__main__":
     args = parse_args()
     torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
     outputs = Qwen3DecoderLayerWrapper(args).run()

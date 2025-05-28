@@ -1,5 +1,6 @@
 import argparse
 import os
+from typing import Callable
 
 import torch
 from vllm.model_executor.layers.fused_moe.fused_moe import torch_vllm_inplace_fused_experts
@@ -32,10 +33,17 @@ class FusedExpertsWrapper(OpWrapper):
     @property
     def op_prefix(self) -> str:
         return os.path.splitext(os.path.basename(__file__))[0]
+    
+    @property
+    def target_func(self) -> Callable:
+        if self.device == "cuda":
+            return torch_vllm_inplace_fused_experts
+        else:
+            raise NotImplementedError(f"fused_experts op for {self.device} is not implemented yet.")
 
     def run(self) -> torch.Tensor:
         kwargs = self.make_inputs()
-        output = torch_vllm_inplace_fused_experts(**kwargs)
+        output = self.target_func(**kwargs)
         return output
     
     def make_inputs(self) -> dict:
@@ -119,5 +127,4 @@ class FusedExpertsWrapper(OpWrapper):
 if __name__ == "__main__":
     args = parse_args()
     torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
     output = FusedExpertsWrapper(args).run()

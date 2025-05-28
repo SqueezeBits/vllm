@@ -1,5 +1,6 @@
 import argparse
 import os
+from typing import Callable
 
 import torch
 from vllm import _custom_ops as ops
@@ -23,10 +24,17 @@ class TopkSoftmaxWrapper(OpWrapper):
     @property
     def op_prefix(self) -> str:
         return os.path.splitext(os.path.basename(__file__))[0]
+    
+    @property
+    def target_func(self) -> Callable:
+        if self.device == "cuda":
+            return ops.topk_softmax
+        else:
+            raise NotImplementedError(f"topk_softmax op for {self.device} is not implemented yet.")
 
     def run(self) -> tuple[torch.Tensor, torch.Tensor]:
         kwargs = self.make_inputs()
-        ops.topk_softmax(**kwargs) # inplace operation
+        self.target_func(**kwargs) # inplace operation
         topk_weights = kwargs["topk_weights"]
         topk_indices = kwargs["topk_ids"]
         if self.renormalize_topk_softmax:
@@ -80,5 +88,4 @@ class TopkSoftmaxWrapper(OpWrapper):
 if __name__ == "__main__":
     args = parse_args()
     torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
     outputs = TopkSoftmaxWrapper(args).run()
