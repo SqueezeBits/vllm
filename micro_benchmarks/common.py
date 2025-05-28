@@ -25,9 +25,14 @@ def parse_args():
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--seq_len", type=int, default=8192)
     parser.add_argument("--hidden_dim", type=int, default=2048)
+    parser.add_argument("--head_size", type=int, default=128)
+    parser.add_argument("--num_heads", type=int, default=32)
+    parser.add_argument("--num_kv_heads", type=int, default=4)
     parser.add_argument("--num_experts", type=int, default=128)
     parser.add_argument("--topk", type=int, default=8)
     parser.add_argument("--moe-intermediate-size", type=int, default=768)
+    parser.add_argument("--max_position_embeddings", type=int, default=40960)
+    parser.add_argument("--no-neox-style", action="store_false", dest="is_neox_style", help="Disable RoPE NeoX style (enabled by default)")
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--ep-size", type=int, default=1)
     parser.add_argument("--tp-size", type=int, default=1)
@@ -48,6 +53,8 @@ class OpWrapper(ABC):
         self.save_inputs = args.save_inputs
         self.load_inputs = args.load_inputs
         self.artifacts_dir = args.artifacts_dir
+        self.seq_len = args.seq_len
+        self.hidden_dim = args.hidden_dim
     
     @property
     @abstractmethod
@@ -75,43 +82,6 @@ class OpWrapper(ABC):
                 raise FileNotFoundError(f"Input file {saved_path} not found.")
             inputs_loaded[input_name] = torch.load(saved_path)
         return inputs_loaded
-
-
-class ModuleWrapper(OpWrapper):
-    def __init__(self, args: argparse.Namespace):
-        super().__init__(args)
-        self.seq_len = args.seq_len
-        self.hidden_dim = args.hidden_dim
-        self.tp_size = args.tp_size
-        self.rank = args.rank
-        self.initialize_parallel_state(args)
-        torch.set_default_dtype(self.torch_dtype)
-    
-    def initialize_parallel_state(self, args: argparse.Namespace) -> None:
-        backend = "nccl" if self.device == "cuda" else None
-        if backend is None:
-            raise NotImplementedError(f"Backend {backend} is not supported yet.")
-
-        init_distributed_environment(
-            world_size=args.ep_size,
-            rank=self.rank,
-            local_rank=self.rank,
-            backend=backend,
-            distributed_init_method=args.distributed_init_method,
-        )
-        # GroupCoordinator is initialized based on current platform.
-        initialize_model_parallel(args.tp_size)
-
-    def post_init(self) -> None:
-        assert hasattr(self, "module"), "Module is not initialized yet."
-        self.initialize_weights()
-        self.module.to(self.device).to(self.torch_dtype)
-    
-    def initialize_weights(self) -> None:
-        # TODO: enable loading pretrained weights
-        with torch.no_grad():
-            for _, param_value in self.module.named_parameters():
-                param_value.data.copy_(torch.randn_like(param_value))
     
     def build_attn_metadata(self) -> FlashAttentionMetadata:
         if self.device == "cuda":
@@ -175,6 +145,41 @@ class ModuleWrapper(OpWrapper):
             )
         else:
             raise NotImplementedError(f"Attention metadata for {self.device} is not implemented yet.")
+
+
+class ModuleWrapper(OpWrapper):
+    def __init__(self, args: argparse.Namespace):
+        super().__init__(args)
+        self.tp_size = args.tp_size
+        self.rank = args.rank
+        self.initialize_parallel_state(args)
+        torch.set_default_dtype(self.torch_dtype)
+    
+    def initialize_parallel_state(self, args: argparse.Namespace) -> None:
+        backend = "nccl" if self.device == "cuda" else None
+        if backend is None:
+            raise NotImplementedError(f"Backend {backend} is not supported yet.")
+
+        init_distributed_environment(
+            world_size=args.ep_size,
+            rank=self.rank,
+            local_rank=self.rank,
+            backend=backend,
+            distributed_init_method=args.distributed_init_method,
+        )
+        # GroupCoordinator is initialized based on current platform.
+        initialize_model_parallel(args.tp_size)
+
+    def post_init(self) -> None:
+        assert hasattr(self, "module"), "Module is not initialized yet."
+        self.initialize_weights()
+        self.module.to(self.device).to(self.torch_dtype)
+    
+    def initialize_weights(self) -> None:
+        # TODO: enable loading pretrained weights
+        with torch.no_grad():
+            for _, param_value in self.module.named_parameters():
+                param_value.data.copy_(torch.randn_like(param_value))
     
     def build_vllm_config(self) -> VllmConfig:
         return VllmConfig(
