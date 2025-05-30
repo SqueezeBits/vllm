@@ -31,6 +31,7 @@ class FusedExpertsWrapper(OpWrapper):
             )
             print(f"Initialized distributed process group with rank {args.rank}")
             self.device = f"cuda:{args.rank}"
+            torch.cuda.set_device(torch.device(self.device))
     
     @property
     def input_names(self) -> list[str]:
@@ -145,10 +146,9 @@ class FusedExpertsWrapper(OpWrapper):
             dist.destroy_process_group()
 
 
-def run_rank(rank, world_size, args):
+def run_rank(rank, args):
     """Run the test for a specific rank."""
     args.rank = rank
-    args.ep_size = world_size
     output = FusedExpertsWrapper(args).run()
 
 
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     else:
         torch.multiprocessing.spawn(
             run_rank,
-            args=(args.ep_size, args),
+            args=(args,),
             nprocs=args.ep_size,
             join=True
         )

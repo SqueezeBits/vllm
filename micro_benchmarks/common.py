@@ -40,7 +40,6 @@ def parse_args():
     parser.add_argument("--no-neox-style", action="store_false", dest="is_neox_style", help="Disable RoPE NeoX style (enabled by default)")
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--ep-size", type=int, default=1)
-    parser.add_argument("--tp-size", type=int, default=1)
     parser.add_argument("--save-inputs", action="store_true", help="Save input tensors to reuse in future runs.")
     parser.add_argument("--load-inputs", action="store_true", help="Load saved input tensors.")
     parser.add_argument("--artifacts-dir", type=str, default=os.path.join(os.path.dirname(__file__), "artifacts"))
@@ -89,7 +88,7 @@ class OpWrapper(ABC):
         return inputs_loaded
     
     def build_attn_metadata(self) -> "FlashAttentionMetadata":
-        if self.device == "cuda":
+        if self.device.startswith("cuda"):
             if os.environ.get("VLLM_USE_V1", "1") == "0":
                 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
             else:
@@ -161,7 +160,8 @@ class OpWrapper(ABC):
 class ModuleWrapper(OpWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
-        self.tp_size = args.tp_size
+        self.tp_size = args.ep_size
+        self.ep_size = args.ep_size
         self.rank = args.rank
         self.initialize_parallel_state(args)
         torch.set_default_dtype(self.torch_dtype)
@@ -179,7 +179,7 @@ class ModuleWrapper(OpWrapper):
             distributed_init_method=args.distributed_init_method,
         )
         # GroupCoordinator is initialized based on current platform.
-        initialize_model_parallel(args.tp_size)
+        initialize_model_parallel(self.tp_size)
 
     def post_init(self) -> None:
         assert hasattr(self, "module"), "Module is not initialized yet."
@@ -191,11 +191,14 @@ class ModuleWrapper(OpWrapper):
         with torch.no_grad():
             for _, param_value in self.module.named_parameters():
                 param_value.data.copy_(torch.randn_like(param_value))
+            for _, buffer_value in self.module.named_buffers():
+                buffer_value.data.copy_(torch.randn_like(buffer_value))
     
     def build_vllm_config(self) -> VllmConfig:
         return VllmConfig(
             parallel_config=ParallelConfig(
                 tensor_parallel_size=self.tp_size,
+                enable_expert_parallel=self.ep_size > 1,
             ),
             compilation_config=CompilationConfig(),
         )

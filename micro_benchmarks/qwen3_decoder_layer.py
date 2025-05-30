@@ -4,6 +4,7 @@ import os
 import torch
 from transformers import PretrainedConfig
 from vllm.transformers_utils.config import get_config
+from vllm.model_executor.model_loader.loader import set_current_vllm_config
 from vllm.model_executor.models.qwen3_moe import Qwen3MoeDecoderLayer
 from vllm.forward_context import set_forward_context
 from vllm.config import VllmConfig
@@ -15,11 +16,15 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
         self.prefix = "model.layers.0"
-        self.module = Qwen3MoeDecoderLayer(
-            config=self.get_pretrained_config(),
-            prefix=self.prefix
-        )
-        self.post_init()
+        with set_current_vllm_config(super().build_vllm_config()):
+            self.module = Qwen3MoeDecoderLayer(
+                config=self.get_pretrained_config(),
+                prefix=self.prefix
+            )
+            if self.ep_size > 1:
+                self.device = f"cuda:{args.rank}"
+                torch.cuda.set_device(torch.device(self.device))
+            self.post_init()
 
     @property
     def input_names(self) -> list[str]:
@@ -64,12 +69,31 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
         }
         return vllm_config
     
+    def post_init(self):
+        super().post_init()
+        if self.ep_size > 1:
+            self.module.mlp.experts.expert_map = self.module.mlp.experts.expert_map.to(self.device)
+    
     def get_pretrained_config(self) -> PretrainedConfig:
         hf_config = get_config("Qwen/Qwen3-30B-A3B", False)
         return hf_config
 
 
+def run_rank(rank, args):
+    """Run the test for a specific rank."""
+    args.rank = rank
+    outputs = Qwen3DecoderLayerWrapper(args).run()
+
 if __name__ == "__main__":
     args = parse_args()
     torch.manual_seed(args.seed)
-    outputs = Qwen3DecoderLayerWrapper(args).run()
+
+    if args.ep_size == 1:
+        output = Qwen3DecoderLayerWrapper(args).run()
+    else:
+        torch.multiprocessing.spawn(
+            run_rank,
+            args=(args,),
+            nprocs=args.ep_size,
+            join=True
+        )
