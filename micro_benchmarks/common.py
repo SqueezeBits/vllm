@@ -5,13 +5,16 @@ import os
 from typing import Any
 
 import torch
+from vllm.model_executor.model_loader.loader import get_model_loader
 from vllm.distributed.parallel_state import (
     init_distributed_environment,
     initialize_model_parallel,
     destroy_model_parallel,
     destroy_distributed_environment,
 )
-from vllm.config import VllmConfig, ParallelConfig, CompilationConfig
+from vllm.config import (
+    VllmConfig, ParallelConfig, CompilationConfig, ModelConfig, LoadConfig, DeviceConfig
+)
 from vllm.utils import get_distributed_init_method, get_ip, get_open_port
 
 
@@ -76,7 +79,7 @@ class OpWrapper(ABC):
 
     def save_inputs_to_artifacts(self, inputs: dict) -> None:
         for input_name in self.input_names:
-            torch.save(inputs[input_name], os.path.join(self.artifacts_dir, f"{self.op_prefix}_input_{input_name}.pt"))
+            torch.save(inputs[input_name].to(torch.device("cpu")), os.path.join(self.artifacts_dir, f"{self.op_prefix}_input_{input_name}.pt"))
     
     def load_inputs_from_artifacts(self) -> dict:
         inputs_loaded = {}
@@ -84,7 +87,7 @@ class OpWrapper(ABC):
             saved_path = os.path.join(self.artifacts_dir, f"{self.op_prefix}_input_{input_name}.pt")
             if not os.path.exists(saved_path):
                 raise FileNotFoundError(f"Input file {saved_path} not found.")
-            inputs_loaded[input_name] = torch.load(saved_path)
+            inputs_loaded[input_name] = torch.load(saved_path).to(self.device)
         return inputs_loaded
     
     def build_attn_metadata(self) -> "FlashAttentionMetadata":
@@ -183,12 +186,10 @@ class ModuleWrapper(OpWrapper):
 
     def initialize_weights(self) -> None:
         assert hasattr(self, "module"), "Module is not initialized yet."
-        # TODO: enable loading pretrained weights
-        with torch.no_grad():
-            for _, param_value in self.module.named_parameters():
-                param_value.data.copy_(torch.randn_like(param_value))
-            for _, buffer_value in self.module.named_buffers():
-                buffer_value.data.copy_(torch.randn_like(buffer_value))
+        vllm_config = self.build_vllm_config()
+        loader = get_model_loader(vllm_config.load_config)
+        weights = loader.get_all_weights(vllm_config.model_config, self.module)
+        self.load_weights(weights)
     
     def build_vllm_config(self) -> VllmConfig:
         return VllmConfig(
@@ -197,6 +198,19 @@ class ModuleWrapper(OpWrapper):
                 enable_expert_parallel=self.ep_size > 1,
             ),
             compilation_config=CompilationConfig(),
+            model_config=ModelConfig(
+                model=self.model,
+                task="generate",
+                tokenizer=self.model,
+                tokenizer_mode="auto",
+                trust_remote_code=False,
+                dtype=self.torch_dtype,
+                seed=0,
+            ),
+            load_config=LoadConfig(),
+            device_config=DeviceConfig(
+                device=torch.device(self.device),
+            ),
         )
     
     def __del__(self) -> None:
