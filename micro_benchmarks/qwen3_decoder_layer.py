@@ -4,6 +4,7 @@ import os
 import torch
 from transformers import PretrainedConfig
 from vllm.transformers_utils.config import get_config
+from vllm.model_executor.model_loader.utils import set_default_torch_dtype
 from vllm.model_executor.model_loader.loader import set_current_vllm_config
 from vllm.model_executor.models.qwen3_moe import Qwen3MoeDecoderLayer
 from vllm.forward_context import set_forward_context
@@ -16,15 +17,17 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
         self.prefix = "model.layers.0"
-        with set_current_vllm_config(super().build_vllm_config()):
+        if self.ep_size > 1:
+            self.device = f"cuda:{args.rank}"
+            torch.cuda.set_device(torch.device(self.device))
+        with set_current_vllm_config(super().build_vllm_config()), \
+                torch.device(self.device), \
+                set_default_torch_dtype(self.torch_dtype):
             self.module = Qwen3MoeDecoderLayer(
                 config=self.get_pretrained_config(),
                 prefix=self.prefix
             )
-            if self.ep_size > 1:
-                self.device = f"cuda:{args.rank}"
-                torch.cuda.set_device(torch.device(self.device))
-            self.post_init()
+            self.initialize_weights()
 
     @property
     def input_names(self) -> list[str]:
@@ -68,11 +71,6 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
             f"{self.prefix}.self_attn.attn": self.module.self_attn.attn,
         }
         return vllm_config
-    
-    def post_init(self):
-        super().post_init()
-        if self.ep_size > 1:
-            self.module.mlp.experts.expert_map = self.module.mlp.experts.expert_map.to(self.device)
     
     def get_pretrained_config(self) -> PretrainedConfig:
         hf_config = get_config("Qwen/Qwen3-30B-A3B", False)

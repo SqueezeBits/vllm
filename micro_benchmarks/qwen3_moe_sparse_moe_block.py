@@ -4,6 +4,8 @@ import os
 import torch
 from transformers import PretrainedConfig
 from vllm.transformers_utils.config import get_config
+from vllm.model_executor.model_loader.utils import set_default_torch_dtype
+from vllm.model_executor.model_loader.loader import set_current_vllm_config
 from vllm.model_executor.models.qwen3_moe import Qwen3MoeSparseMoeBlock
 from vllm.forward_context import set_forward_context
 
@@ -14,11 +16,14 @@ class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
         self.prefix = "model.layers.0"
-        self.module = Qwen3MoeSparseMoeBlock(
-            config=self.get_pretrained_config(),
-            prefix=self.prefix
-        )
-        self.post_init()
+        with set_current_vllm_config(super().build_vllm_config()), \
+                torch.device(self.device), \
+                set_default_torch_dtype(self.torch_dtype):
+            self.module = Qwen3MoeSparseMoeBlock(
+                config=self.get_pretrained_config(),
+                prefix=self.prefix
+            )
+            self.initialize_weights()
     
     @property
     def input_names(self) -> list[str]:

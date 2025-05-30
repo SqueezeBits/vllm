@@ -4,6 +4,8 @@ import os
 import torch
 from transformers import PretrainedConfig
 from vllm.transformers_utils.config import get_config
+from vllm.model_executor.model_loader.utils import set_default_torch_dtype
+from vllm.model_executor.model_loader.loader import set_current_vllm_config
 from vllm.model_executor.models.qwen3_moe import Qwen3MoeAttention
 from vllm.forward_context import set_forward_context
 from vllm.config import VllmConfig
@@ -20,19 +22,22 @@ class Qwen3MoeAttentionWrapper(ModuleWrapper):
         rope_scaling = getattr(config, "rope_scaling", None)
         max_position_embeddings = getattr(config, "max_position_embeddings",
                                           8192)
-        self.module = Qwen3MoeAttention(
-            hidden_size=config.hidden_size,
-            num_heads=config.num_attention_heads,
-            num_kv_heads=config.num_key_value_heads,
-            rope_theta=rope_theta,
-            rope_scaling=rope_scaling,
-            max_position_embeddings=max_position_embeddings,
-            rms_norm_eps=config.rms_norm_eps,
-            qkv_bias=getattr(config, 'attention_bias', False),
-            head_dim=getattr(config, 'head_dim', None),
-            prefix=f"{self.prefix}.self_attn",
-        )
-        self.post_init()
+        with set_current_vllm_config(super().build_vllm_config()), \
+                torch.device(self.device), \
+                set_default_torch_dtype(self.torch_dtype):
+            self.module = Qwen3MoeAttention(
+                hidden_size=config.hidden_size,
+                num_heads=config.num_attention_heads,
+                num_kv_heads=config.num_key_value_heads,
+                rope_theta=rope_theta,
+                rope_scaling=rope_scaling,
+                max_position_embeddings=max_position_embeddings,
+                rms_norm_eps=config.rms_norm_eps,
+                qkv_bias=getattr(config, 'attention_bias', False),
+                head_dim=getattr(config, 'head_dim', None),
+                prefix=f"{self.prefix}.self_attn",
+            )
+            self.initialize_weights()
     
     @property
     def input_names(self) -> list[str]:

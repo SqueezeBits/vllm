@@ -4,6 +4,8 @@ import os
 import torch
 from transformers import PretrainedConfig
 from vllm.transformers_utils.config import get_config
+from vllm.model_executor.model_loader.utils import set_default_torch_dtype
+from vllm.model_executor.model_loader.loader import set_current_vllm_config
 from vllm.model_executor.layers.layernorm import RMSNorm
 
 from common import parse_args, ModuleWrapper
@@ -17,8 +19,11 @@ class RMSNormWrapper(ModuleWrapper):
         self.num_kv_heads = args.num_kv_heads
         self.max_position_embeddings = args.max_position_embeddings
         config = self.get_pretrained_config()
-        self.module = RMSNorm(self.head_size, eps=config.rms_norm_eps)
-        self.post_init()
+        with set_current_vllm_config(super().build_vllm_config()), \
+                torch.device(self.device), \
+                set_default_torch_dtype(self.torch_dtype):
+            self.module = RMSNorm(self.head_size, eps=config.rms_norm_eps)
+            self.initialize_weights()
 
     @property
     def input_names(self) -> list[str]:

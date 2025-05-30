@@ -181,12 +181,8 @@ class ModuleWrapper(OpWrapper):
         # GroupCoordinator is initialized based on current platform.
         initialize_model_parallel(self.tp_size)
 
-    def post_init(self) -> None:
-        assert hasattr(self, "module"), "Module is not initialized yet."
-        self.initialize_weights()
-        self.module.to(self.device).to(self.torch_dtype)
-    
     def initialize_weights(self) -> None:
+        assert hasattr(self, "module"), "Module is not initialized yet."
         # TODO: enable loading pretrained weights
         with torch.no_grad():
             for _, param_value in self.module.named_parameters():
