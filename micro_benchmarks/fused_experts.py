@@ -3,6 +3,7 @@ import os
 from typing import Callable
 
 import torch
+import torch.distributed as dist
 from vllm.model_executor.layers.fused_moe.fused_moe import torch_vllm_inplace_fused_experts
 
 from common import parse_args, OpWrapper
@@ -17,8 +18,19 @@ class FusedExpertsWrapper(OpWrapper):
         self.ep_size = args.ep_size
         self.moe_intermediate_size = args.moe_intermediate_size
         self.topk = args.topk
+        self.rank = args.rank
         assert self.num_experts % self.ep_size == 0, \
             f"num_experts ({self.num_experts}) is not divisible by ep size ({self.ep_size})."
+        
+        if not dist.is_initialized() and self.ep_size > 1:
+            dist.init_process_group(
+                backend="nccl" if self.device == "cuda" else "gloo",
+                init_method=args.distributed_init_method,
+                world_size=self.ep_size,
+                rank=self.rank
+            )
+            print(f"Initialized distributed process group with rank {args.rank}")
+            self.device = f"cuda:{args.rank}"
     
     @property
     def input_names(self) -> list[str]:
@@ -36,7 +48,7 @@ class FusedExpertsWrapper(OpWrapper):
     
     @property
     def target_func(self) -> Callable:
-        if self.device == "cuda":
+        if self.device.startswith("cuda"):
             return torch_vllm_inplace_fused_experts
         else:
             raise NotImplementedError(f"fused_experts op for {self.device} is not implemented yet.")
@@ -44,6 +56,11 @@ class FusedExpertsWrapper(OpWrapper):
     def run(self) -> torch.Tensor:
         kwargs = self.make_inputs()
         output = self.target_func(**kwargs)
+        if self.ep_size > 1:
+            print(f"[Rank {self.rank}] Before all_reduce - Sum: {torch.sum(output):.4f}, Mean: {torch.mean(output):.4f}")
+            dist.all_reduce(output, op=dist.ReduceOp.SUM)
+            print(f"[Rank {self.rank}] After all_reduce - Sum: {torch.sum(output):.4f}, Mean: {torch.mean(output):.4f}")
+        
         return output
     
     def make_inputs(self) -> dict:
@@ -87,7 +104,7 @@ class FusedExpertsWrapper(OpWrapper):
                 ),
             })
         
-        expert_map = self.create_expert_map()
+        expert_map = self.create_expert_map(self.rank)
         kwargs.update({
             "global_num_experts": self.num_experts,
             "expert_map": expert_map,
@@ -122,9 +139,29 @@ class FusedExpertsWrapper(OpWrapper):
             end_idx = start_idx + experts_per_device
             expert_map[start_idx:end_idx] = cur_expert_map
             return expert_map
+    
+    def __del__(self):
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+def run_rank(rank, world_size, args):
+    """Run the test for a specific rank."""
+    args.rank = rank
+    args.ep_size = world_size
+    output = FusedExpertsWrapper(args).run()
 
 
 if __name__ == "__main__":
     args = parse_args()
     torch.manual_seed(args.seed)
-    output = FusedExpertsWrapper(args).run()
+
+    if args.ep_size == 1:
+        output = FusedExpertsWrapper(args).run()
+    else:
+        torch.multiprocessing.spawn(
+            run_rank,
+            args=(args.ep_size, args),
+            nprocs=args.ep_size,
+            join=True
+        )
