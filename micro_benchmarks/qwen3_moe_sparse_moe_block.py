@@ -16,6 +16,9 @@ class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
         self.prefix = "model.layers.0"
+        if self.ep_size > 1:
+            self.device = f"cuda:{args.rank}"
+            torch.cuda.set_device(torch.device(self.device))
         with set_current_vllm_config(super().build_vllm_config()), \
                 torch.device(self.device), \
                 set_default_torch_dtype(self.torch_dtype):
@@ -63,8 +66,20 @@ class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
         hf_config = get_config("Qwen/Qwen3-30B-A3B", False)
         return hf_config
 
+def run_rank(rank, args):
+    """Run the test for a specific rank."""
+    args.rank = rank
+    outputs = Qwen3MoeSparseMoeBlockWrapper(args).run()
+
 
 if __name__ == "__main__":
     args = parse_args()
     torch.manual_seed(args.seed)
-    output = Qwen3MoeSparseMoeBlockWrapper(args).run()
+    if args.ep_size == 1:
+        output = Qwen3MoeSparseMoeBlockWrapper(args).run()
+    else:
+        torch.multiprocessing.spawn(
+            run_rank,
+            args=(args,),
+            nprocs=args.ep_size,
+        )
