@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument("--distributed-init-method", type=str, default=get_distributed_init_method(get_ip(), get_open_port()))
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dtype", type=str, default="bfloat16")
-    parser.add_argument("--seq_len", type=int, default=8192)
+    parser.add_argument("--seq_len", type=int, default=1024)
     parser.add_argument("--hidden_dim", type=int, default=2048)
     parser.add_argument("--head_size", type=int, default=128)
     parser.add_argument("--num_heads", type=int, default=32)
@@ -43,6 +43,7 @@ def parse_args():
     parser.add_argument("--no-neox-style", action="store_false", dest="is_neox_style", help="Disable RoPE NeoX style (enabled by default)")
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--ep-size", type=int, default=1)
+    parser.add_argument("--enable-data-parallel", action="store_true", help="Enable data parallel. dp_size will be set to ep_size.")
     parser.add_argument("--save-inputs", action="store_true", help="Save input tensors to reuse in future runs.")
     parser.add_argument("--load-inputs", action="store_true", help="Load saved input tensors.")
     parser.add_argument("--artifacts-dir", type=str, default=os.path.join(os.path.dirname(__file__), "artifacts"))
@@ -62,6 +63,10 @@ class OpWrapper(ABC):
         self.artifacts_dir = args.artifacts_dir
         self.seq_len = args.seq_len
         self.hidden_dim = args.hidden_dim
+        self.rank = args.rank
+        self.ep_size = args.ep_size
+        self.tp_size = 1 if args.enable_data_parallel else args.ep_size
+        self.dp_size = 1 if not args.enable_data_parallel else args.ep_size
     
     @property
     @abstractmethod
@@ -79,12 +84,16 @@ class OpWrapper(ABC):
 
     def save_inputs_to_artifacts(self, inputs: dict) -> None:
         for input_name in self.input_names:
-            torch.save(inputs[input_name].to(torch.device("cpu")), os.path.join(self.artifacts_dir, f"{self.op_prefix}_input_{input_name}.pt"))
+            torch.save(
+                inputs[input_name].to(torch.device("cpu")),
+                os.path.join(self.artifacts_dir, f"{self.op_prefix}_input_{input_name}_{self.rank}.pt"))
     
     def load_inputs_from_artifacts(self) -> dict:
         inputs_loaded = {}
         for input_name in self.input_names:
-            saved_path = os.path.join(self.artifacts_dir, f"{self.op_prefix}_input_{input_name}.pt")
+            input_filename = f"{self.op_prefix}_input_{input_name}_{self.rank}.pt" if self.dp_size > 1 \
+                else f"{self.op_prefix}_input_{input_name}_0.pt"
+            saved_path = os.path.join(self.artifacts_dir, input_filename)
             if not os.path.exists(saved_path):
                 raise FileNotFoundError(f"Input file {saved_path} not found.")
             inputs_loaded[input_name] = torch.load(saved_path).to(self.device)
@@ -163,21 +172,25 @@ class OpWrapper(ABC):
 class ModuleWrapper(OpWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
-        self.tp_size = args.ep_size
-        self.ep_size = args.ep_size
-        self.rank = args.rank
         self.initialize_parallel_state(args)
         torch.set_default_dtype(self.torch_dtype)
     
     def initialize_parallel_state(self, args: argparse.Namespace) -> None:
-        backend = "nccl" if self.device == "cuda" else None
+        backend = "nccl" if self.device.startswith("cuda") else None
         if backend is None:
             raise NotImplementedError(f"Backend {backend} is not supported yet.")
-
+        if self.ep_size > 1:
+            self.device = f"cuda:{self.rank}"
+            torch.cuda.set_device(torch.device(self.device))
+        if args.enable_data_parallel:
+            os.environ["VLLM_DP_RANK"] = str(args.rank)
+            os.environ["VLLM_DP_RANK_LOCAL"] = str(args.rank)
+            os.environ["VLLM_DP_SIZE"] = str(args.ep_size)
+            os.environ["VLLM_DP_MASTER_IP"] = "127.0.0.1"
+            os.environ["VLLM_DP_MASTER_PORT"] = args.distributed_init_method.split(":")[-1]
         init_distributed_environment(
-            world_size=args.ep_size,
-            rank=self.rank,
-            local_rank=self.rank,
+            world_size=args.ep_size if not args.enable_data_parallel else 1,
+            rank=self.rank if not args.enable_data_parallel else 0,
             backend=backend,
             distributed_init_method=args.distributed_init_method,
         )

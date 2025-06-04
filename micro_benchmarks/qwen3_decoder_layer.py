@@ -21,9 +21,6 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
         super().__init__(args)
         self.prefix = "model.layers.0"
         self.num_experts = args.num_experts
-        if self.ep_size > 1:
-            self.device = f"cuda:{args.rank}"
-            torch.cuda.set_device(torch.device(self.device))
         with set_current_vllm_config(super().build_vllm_config()), \
                 torch.device(self.device), \
                 set_default_torch_dtype(self.torch_dtype):
@@ -48,7 +45,7 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
     def run(self) -> tuple[torch.Tensor, torch.Tensor]:
         kwargs = self.make_inputs()
         attn_metadata = self.build_attn_metadata()
-        vllm_config = self.build_vllm_config()
+        vllm_config = self.update_vllm_config()
         with set_forward_context(attn_metadata, vllm_config):
             hidden_states, residual = self.module.forward(**kwargs)
         return hidden_states, residual
@@ -74,10 +71,11 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
             self.save_inputs_to_artifacts(kwargs)
         return kwargs
     
-    def build_vllm_config(self) -> VllmConfig:
+    def update_vllm_config(self) -> VllmConfig:
         vllm_config = super().build_vllm_config()
         vllm_config.compilation_config.static_forward_context = {
             f"{self.prefix}.self_attn.attn": self.module.self_attn.attn,
+            f"{self.prefix}.mlp.experts": self.module.mlp.experts,
         }
         return vllm_config
     

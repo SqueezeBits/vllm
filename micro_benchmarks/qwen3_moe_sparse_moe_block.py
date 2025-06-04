@@ -11,6 +11,7 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.models.qwen3_moe import Qwen3MoeSparseMoeBlock
 from vllm.forward_context import set_forward_context
+from vllm.config import VllmConfig
 
 from common import parse_args, ModuleWrapper
 
@@ -20,9 +21,6 @@ class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
         super().__init__(args)
         self.prefix = "model.layers.0.mlp"
         self.num_experts = args.num_experts
-        if self.ep_size > 1:
-            self.device = f"cuda:{args.rank}"
-            torch.cuda.set_device(torch.device(self.device))
         with set_current_vllm_config(super().build_vllm_config()), \
                 torch.device(self.device), \
                 set_default_torch_dtype(self.torch_dtype):
@@ -47,7 +45,7 @@ class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
     def run(self) -> torch.Tensor:
         kwargs = self.make_inputs()
         attn_metadata = self.build_attn_metadata()
-        vllm_config = self.build_vllm_config()
+        vllm_config = self.update_vllm_config()
         with set_forward_context(attn_metadata, vllm_config):
             hidden_states = self.module.forward(**kwargs)
         return hidden_states
@@ -69,6 +67,13 @@ class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
         if self.save_inputs:
             self.save_inputs_to_artifacts(kwargs)
         return kwargs
+    
+    def update_vllm_config(self) -> VllmConfig:
+        vllm_config = super().build_vllm_config()
+        vllm_config.compilation_config.static_forward_context = {
+            f"{self.prefix}.experts": self.module.experts,
+        }
+        return vllm_config
     
     def get_pretrained_config(self) -> PretrainedConfig:
         hf_config = get_config(self.model, False)
