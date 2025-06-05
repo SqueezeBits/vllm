@@ -19,7 +19,7 @@ from common import parse_args, ModuleWrapper
 class Qwen3MoeAttentionWrapper(ModuleWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
-        self.prefix = "model.layers.0.self_attn"
+        self.prefix = "model.layers"
         self.num_experts = args.num_experts
         config = self.get_pretrained_config()
         rope_theta = getattr(config, "rope_theta", 10000)
@@ -29,7 +29,7 @@ class Qwen3MoeAttentionWrapper(ModuleWrapper):
         with set_current_vllm_config(super().build_vllm_config()), \
                 torch.device(self.device), \
                 set_default_torch_dtype(self.torch_dtype):
-            self.module = Qwen3MoeAttention(
+            self.module = torch.nn.ModuleList([Qwen3MoeAttention(
                 hidden_size=config.hidden_size,
                 num_heads=config.num_attention_heads,
                 num_kv_heads=config.num_key_value_heads,
@@ -39,8 +39,8 @@ class Qwen3MoeAttentionWrapper(ModuleWrapper):
                 rms_norm_eps=config.rms_norm_eps,
                 qkv_bias=getattr(config, 'attention_bias', False),
                 head_dim=getattr(config, 'head_dim', None),
-                prefix=self.prefix,
-            )
+                prefix=f"{self.prefix}.{i}.self_attn",
+            ) for i in range(self.num_layers)])
             self.initialize_weights()
     
     @property
@@ -60,7 +60,12 @@ class Qwen3MoeAttentionWrapper(ModuleWrapper):
         attn_metadata = self.build_attn_metadata()
         vllm_config = self.build_vllm_config()
         with set_forward_context(attn_metadata, vllm_config):
-            hidden_states = self.module.forward(**kwargs)
+            hidden_states = kwargs["hidden_states"]
+            for layer in self.module:
+                hidden_states = layer(
+                    positions=kwargs["positions"],
+                    hidden_states=hidden_states
+                )
         return hidden_states
     
     def make_inputs(self) -> dict:
@@ -84,9 +89,10 @@ class Qwen3MoeAttentionWrapper(ModuleWrapper):
     
     def build_vllm_config(self) -> VllmConfig:
         vllm_config = super().build_vllm_config()
-        vllm_config.compilation_config.static_forward_context = {
-            f"{self.prefix}.attn": self.module.attn,
-        }
+        for i in range(self.num_layers):
+            vllm_config.compilation_config.static_forward_context.update({
+                f"{self.prefix}.{i}.self_attn.attn": self.module[i].attn,
+            })
         return vllm_config
     
     def get_pretrained_config(self) -> PretrainedConfig:
@@ -107,7 +113,10 @@ class Qwen3MoeAttentionWrapper(ModuleWrapper):
             ckpt_down_proj_name="down_proj",
             ckpt_up_proj_name="up_proj",
             num_experts=self.num_experts)
-        params_dict = {f"{self.prefix}.{name}": param for name, param in self.module.named_parameters()}
+        params_dict = {
+            f"{self.prefix}.{name.split('.', 1)[0]}.self_attn.{name.split('.', 1)[1]}": param 
+            for name, param in self.module.named_parameters()
+        }
         for name, loaded_weight in weights:
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
                 # Skip non-stacked layers and experts (experts handled below).

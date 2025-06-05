@@ -19,15 +19,15 @@ from common import parse_args, ModuleWrapper
 class Qwen3DecoderLayerWrapper(ModuleWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
-        self.prefix = "model.layers.0"
+        self.prefix = "model.layers"
         self.num_experts = args.num_experts
         with set_current_vllm_config(super().build_vllm_config()), \
                 torch.device(self.device), \
                 set_default_torch_dtype(self.torch_dtype):
-            self.module = Qwen3MoeDecoderLayer(
+            self.module = torch.nn.ModuleList([Qwen3MoeDecoderLayer(
                 config=self.get_pretrained_config(),
-                prefix=self.prefix
-            )
+                prefix=f"{self.prefix}.{i}"
+            ) for i in range(self.num_layers)])
             self.initialize_weights()
 
     @property
@@ -47,7 +47,14 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
         attn_metadata = self.build_attn_metadata()
         vllm_config = self.update_vllm_config()
         with set_forward_context(attn_metadata, vllm_config):
-            hidden_states, residual = self.module.forward(**kwargs)
+            hidden_states = kwargs["hidden_states"]
+            residual = kwargs["residual"]
+            for layer in self.module:
+                hidden_states, residual = layer(
+                    positions=kwargs["positions"],
+                    hidden_states=hidden_states,
+                    residual=residual
+                )
         return hidden_states, residual
 
     def make_inputs(self) -> dict:
@@ -73,10 +80,11 @@ class Qwen3DecoderLayerWrapper(ModuleWrapper):
     
     def update_vllm_config(self) -> VllmConfig:
         vllm_config = super().build_vllm_config()
-        vllm_config.compilation_config.static_forward_context = {
-            f"{self.prefix}.self_attn.attn": self.module.self_attn.attn,
-            f"{self.prefix}.mlp.experts": self.module.mlp.experts,
-        }
+        for i in range(self.num_layers):
+            vllm_config.compilation_config.static_forward_context.update({
+                f"{self.prefix}.{i}.self_attn.attn": self.module[i].self_attn.attn,
+                f"{self.prefix}.{i}.mlp.experts": self.module[i].mlp.experts,
+            })
         return vllm_config
     
     def get_pretrained_config(self) -> PretrainedConfig:

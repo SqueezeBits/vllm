@@ -19,15 +19,15 @@ from common import parse_args, ModuleWrapper
 class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
-        self.prefix = "model.layers.0.mlp"
+        self.prefix = "model.layers"
         self.num_experts = args.num_experts
         with set_current_vllm_config(super().build_vllm_config()), \
                 torch.device(self.device), \
                 set_default_torch_dtype(self.torch_dtype):
-            self.module = Qwen3MoeSparseMoeBlock(
+            self.module = torch.nn.ModuleList([Qwen3MoeSparseMoeBlock(
                 config=self.get_pretrained_config(),
-                prefix=self.prefix
-            )
+                prefix=f"{self.prefix}.{i}.mlp"
+            ) for i in range(self.num_layers)])
             self.initialize_weights()
     
     @property
@@ -47,7 +47,9 @@ class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
         attn_metadata = self.build_attn_metadata()
         vllm_config = self.update_vllm_config()
         with set_forward_context(attn_metadata, vllm_config):
-            hidden_states = self.module.forward(**kwargs)
+            hidden_states = kwargs["hidden_states"]
+            for layer in self.module:
+                hidden_states = layer(hidden_states)
         return hidden_states
     
     def make_inputs(self) -> dict:
@@ -70,9 +72,10 @@ class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
     
     def update_vllm_config(self) -> VllmConfig:
         vllm_config = super().build_vllm_config()
-        vllm_config.compilation_config.static_forward_context = {
-            f"{self.prefix}.experts": self.module.experts,
-        }
+        for i in range(self.num_layers):
+            vllm_config.compilation_config.static_forward_context.update({
+                f"{self.prefix}.{i}.mlp.experts": self.module[i].experts,
+            })
         return vllm_config
     
     def get_pretrained_config(self) -> PretrainedConfig:
@@ -93,7 +96,10 @@ class Qwen3MoeSparseMoeBlockWrapper(ModuleWrapper):
             ckpt_down_proj_name="down_proj",
             ckpt_up_proj_name="up_proj",
             num_experts=self.num_experts)
-        params_dict = {f"{self.prefix}.{name}": param for name, param in self.module.named_parameters()}
+        params_dict = {
+            f"{self.prefix}.{name.split('.', 1)[0]}.mlp.{name.split('.', 1)[1]}": param 
+            for name, param in self.module.named_parameters()
+        }
         for name, loaded_weight in weights:
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
                 # Skip non-stacked layers and experts (experts handled below).

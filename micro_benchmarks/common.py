@@ -41,6 +41,7 @@ def parse_args():
     parser.add_argument("--moe-intermediate-size", type=int, default=768)
     parser.add_argument("--max_position_embeddings", type=int, default=40960)
     parser.add_argument("--no-neox-style", action="store_false", dest="is_neox_style", help="Disable RoPE NeoX style (enabled by default)")
+    parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--ep-size", type=int, default=1)
     parser.add_argument("--enable-data-parallel", action="store_true", help="Enable data parallel. dp_size will be set to ep_size.")
@@ -120,8 +121,8 @@ class OpWrapper(ABC):
             use_cuda_graph = False
             max_query_len = 32
             max_decode_query_len = 1
-            query_start_loc = torch.arange(0, self.seq_len, seq_block_size, device=self.device, dtype=torch.int32)
-            seq_start_loc = torch.arange(0, self.seq_len, seq_block_size, device=self.device, dtype=torch.int32)
+            query_start_loc = torch.arange(0, self.seq_len + seq_block_size, seq_block_size, device=self.device, dtype=torch.int32)
+            seq_start_loc = torch.arange(0, self.seq_len + seq_block_size, seq_block_size, device=self.device, dtype=torch.int32)
             encoder_seq_lens = None
             encoder_seq_lens_tensor = None
             encoder_seq_start_loc = None
@@ -172,6 +173,7 @@ class OpWrapper(ABC):
 class ModuleWrapper(OpWrapper):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
+        self.num_layers = args.num_layers
         self.initialize_parallel_state(args)
         torch.set_default_dtype(self.torch_dtype)
     
