@@ -48,6 +48,7 @@ from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
                                   RequestOutputKind, SamplingParams)
 from vllm.utils import random_uuid, resolve_obj_by_qualname
+from vllm.v1.metrics.stats import RequestStateStats
 
 logger = init_logger(__name__)
 
@@ -1588,6 +1589,7 @@ class CompletionResponse(OpenAIBaseModel):
                                    "priority"]] = None
     system_fingerprint: Optional[str] = None
     usage: UsageInfo
+    metrics: Optional[list[RequestStateStats]] = None
 
     # vLLM-specific fields that are not in OpenAI spec
     kv_transfer_params: Optional[dict[str, Any]] = Field(

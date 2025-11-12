@@ -504,7 +504,12 @@ class OpenAIServingCompletion(OpenAIServing):
         num_generated_tokens = 0
         kv_transfer_params = None
         last_final_res = None
+        metrics = None
         for final_res in final_res_batch:
+            if metrics is None:
+                metrics = [final_res.metrics]
+            else:
+                metrics.extend(final_res.metrics)
             last_final_res = final_res
             prompt_token_ids = final_res.prompt_token_ids
             assert prompt_token_ids is not None
@@ -594,6 +599,7 @@ class OpenAIServingCompletion(OpenAIServing):
             model=model_name,
             choices=choices,
             usage=usage,
+            metrics=metrics,
             kv_transfer_params=kv_transfer_params,
         )
 
